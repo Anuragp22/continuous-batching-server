@@ -16,6 +16,9 @@ install-gpu:
 dev:
 	$(UV) run uvicorn cbserver.api.app:create_app --factory --host $(HOST) --port $(PORT) --reload
 
+dev-hf:
+	CBSERVER_ENGINE_BACKEND=hf CBSERVER_MODEL=$(MODEL) $(UV) run uvicorn cbserver.api.app:create_app --factory --host $(HOST) --port $(PORT)
+
 serve:
 	$(UV) run cbserver serve --model $(MODEL) --host $(HOST) --port $(PORT)
 
