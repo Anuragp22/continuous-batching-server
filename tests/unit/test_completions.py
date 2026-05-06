@@ -42,7 +42,7 @@ def test_stream_emits_sse_chunks_and_done(client) -> None:
     assert data_lines[-1] == "[DONE]"
     chunks = [json.loads(line) for line in data_lines[:-1]]
     assert len(chunks) == 4
-    assert chunks[0]["object"] == "text_completion.chunk"
+    assert chunks[0]["object"] == "text_completion"
     assert chunks[0]["choices"][0]["text"] == "tok0 "
     assert chunks[-1]["choices"][0]["finish_reason"] == "length"
 

@@ -50,4 +50,4 @@ def test_stream_chunk_object_field() -> None:
         model="qwen",
         choices=[Choice(text="hi", finish_reason=None)],
     )
-    assert chunk.object == "text_completion.chunk"
+    assert chunk.object == "text_completion"

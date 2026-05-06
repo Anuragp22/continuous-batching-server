@@ -9,13 +9,12 @@ from cbserver.api.schemas import (
     Choice,
     CompletionRequest,
     CompletionResponse,
-    FinishReason,
     StreamChunk,
     Usage,
     _new_completion_id,
     _now,
 )
-from cbserver.engine.protocols import TextGenerator
+from cbserver.engine.protocols import FinishReason, TextGenerator
 from cbserver.obs.metrics import (
     active_requests,
     decode_tokens_total,
@@ -58,6 +57,7 @@ async def _stream_events(
     completion_id = _new_completion_id()
     created = _now()
     decoded = 0
+    cancelled = False
 
     async with semaphore:
         active_requests.inc()
@@ -69,7 +69,7 @@ async def _stream_events(
                 top_p=body.top_p,
             ):
                 if await request.is_disconnected():
-                    requests_total.labels(status="cancelled").inc()
+                    cancelled = True
                     return
 
                 if chunk.text:
@@ -83,10 +83,15 @@ async def _stream_events(
                 )
                 yield {"data": stream_chunk.model_dump_json()}
 
-            decode_tokens_total.inc(decoded)
             requests_total.labels(status="completed").inc()
             yield {"data": "[DONE]"}
+        except (asyncio.CancelledError, GeneratorExit):
+            cancelled = True
+            raise
         finally:
+            decode_tokens_total.inc(decoded)
+            if cancelled:
+                requests_total.labels(status="cancelled").inc()
             active_requests.dec()
 
 
@@ -99,6 +104,7 @@ async def _collect_response(
     pieces: list[str] = []
     finish: FinishReason = "stop"
     decoded = 0
+    cancelled = False
 
     async with semaphore:
         active_requests.inc()
@@ -115,9 +121,7 @@ async def _collect_response(
                 if chunk.finish_reason:
                     finish = chunk.finish_reason
 
-            decode_tokens_total.inc(decoded)
             requests_total.labels(status="completed").inc()
-
             prompt_tokens = _estimate_tokens(body.prompt)
             return CompletionResponse(
                 model=body.model,
@@ -128,7 +132,13 @@ async def _collect_response(
                     total_tokens=prompt_tokens + decoded,
                 ),
             )
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         finally:
+            decode_tokens_total.inc(decoded)
+            if cancelled:
+                requests_total.labels(status="cancelled").inc()
             active_requests.dec()
 
 
