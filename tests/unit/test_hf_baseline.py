@@ -109,6 +109,40 @@ async def test_stop_in_middle_of_chunk_emits_pre_stop_portion_only() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stop_picks_earliest_match_not_list_order() -> None:
+    gen, _ = _make_generator(["AB CD ", "EF GH"])
+    chunks = [
+        chunk async for chunk in gen.stream(
+            prompt="hi", max_tokens=10, stop=["GH", "CD"]
+        )
+    ]
+    text_chunks = [c.text for c in chunks if c.text]
+    assert text_chunks == ["AB "]
+    assert chunks[-1].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_generate_exception_does_not_hang_consumer() -> None:
+    streamer = _FakeStreamer()
+
+    class _FailingModel:
+        def generate(self, **_kwargs: Any) -> None:
+            raise RuntimeError("simulated CUDA OOM")
+
+    gen = HFBaselineGenerator(
+        model=_FailingModel(),
+        tokenizer=_FakeTokenizer(),
+        device="cpu",
+        streamer_factory=lambda _tok: streamer,
+        cancel_criteria_factory=lambda _flag: None,
+    )
+
+    chunks = [chunk async for chunk in gen.stream(prompt="hi", max_tokens=10)]
+    assert all(c.text == "" for c in chunks)
+    assert chunks[-1].finish_reason == "length"
+
+
+@pytest.mark.asyncio
 async def test_stop_with_no_match_runs_to_completion() -> None:
     gen, _ = _make_generator(["a ", "b ", "c"])
     chunks = [

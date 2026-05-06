@@ -1,9 +1,12 @@
 import asyncio
+import logging
 import threading
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from cbserver.engine.protocols import FinishReason, GenerationChunk
+
+logger = logging.getLogger(__name__)
 
 
 def _default_streamer_factory(tokenizer: Any) -> Any:
@@ -27,6 +30,22 @@ def _build_cancel_criteria(cancel_flag: threading.Event) -> Any | None:
             return cancel_flag.is_set()
 
     return StoppingCriteriaList([_FlagStoppingCriterion()])
+
+
+def _earliest_stop_index(buffer: str, stop: list[str]) -> int | None:
+    indices = [buffer.find(needle) for needle in stop]
+    hits = [idx for idx in indices if idx >= 0]
+    return min(hits) if hits else None
+
+
+def _terminate_streamer(streamer: Any) -> None:
+    end = getattr(streamer, "end", None) or getattr(streamer, "put_stop", None)
+    if end is None:
+        return
+    try:
+        end()
+    except Exception:  # pragma: no cover - best-effort cleanup
+        logger.exception("hf_baseline: failed to terminate streamer")
 
 
 class HFBaselineGenerator:
@@ -72,9 +91,15 @@ class HFBaselineGenerator:
         if criteria is not None:
             generation_kwargs["stopping_criteria"] = criteria
 
-        thread = threading.Thread(
-            target=self._model.generate, kwargs=generation_kwargs, daemon=True
-        )
+        def _run_generate() -> None:
+            try:
+                self._model.generate(**generation_kwargs)
+            except BaseException:
+                logger.exception("hf_baseline: model.generate raised")
+            finally:
+                _terminate_streamer(streamer)
+
+        thread = threading.Thread(target=_run_generate, daemon=True)
         thread.start()
 
         loop = asyncio.get_running_loop()
@@ -90,11 +115,8 @@ class HFBaselineGenerator:
                 new_accumulated = accumulated + chunk_text
 
                 if stop:
-                    matched = next(
-                        (needle for needle in stop if needle in new_accumulated), None
-                    )
-                    if matched:
-                        stop_idx = new_accumulated.index(matched)
+                    stop_idx = _earliest_stop_index(new_accumulated, stop)
+                    if stop_idx is not None:
                         pre_stop = new_accumulated[len(accumulated) : stop_idx]
                         if pre_stop:
                             yield GenerationChunk(text=pre_stop, finish_reason=None)

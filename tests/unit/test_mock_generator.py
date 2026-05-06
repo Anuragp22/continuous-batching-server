@@ -62,6 +62,19 @@ async def test_mock_with_none_stop_behaves_like_no_stop() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mock_picks_earliest_stop_index_not_list_order() -> None:
+    gen = MockGenerator(delay_per_token=0.0)
+    chunks = [
+        chunk async for chunk in gen.stream(
+            "hi", max_tokens=10, stop=["k2", "k1"]
+        )
+    ]
+    texts = [c.text for c in chunks if c.text]
+    assert texts == ["tok0 ", "to"]
+    assert chunks[-1].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
 async def test_mock_emits_pre_stop_portion_when_stop_matches_inside_chunk() -> None:
     gen = MockGenerator(delay_per_token=0.0)
     chunks = [chunk async for chunk in gen.stream("hi", max_tokens=10, stop=["k1"])]

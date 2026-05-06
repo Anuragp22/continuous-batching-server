@@ -4,6 +4,12 @@ from collections.abc import AsyncIterator
 from cbserver.engine.protocols import GenerationChunk
 
 
+def _earliest_stop_index(buffer: str, stop: list[str]) -> int | None:
+    indices = [buffer.find(needle) for needle in stop]
+    hits = [idx for idx in indices if idx >= 0]
+    return min(hits) if hits else None
+
+
 class MockGenerator:
     def __init__(self, delay_per_token: float = 0.0) -> None:
         self._delay = delay_per_token
@@ -24,9 +30,8 @@ class MockGenerator:
             new_accumulated = accumulated + text
 
             if stop:
-                matched = next((needle for needle in stop if needle in new_accumulated), None)
-                if matched:
-                    stop_idx = new_accumulated.index(matched)
+                stop_idx = _earliest_stop_index(new_accumulated, stop)
+                if stop_idx is not None:
                     pre_stop = new_accumulated[len(accumulated) : stop_idx]
                     if pre_stop:
                         yield GenerationChunk(text=pre_stop, finish_reason=None)
