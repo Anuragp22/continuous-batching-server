@@ -73,13 +73,16 @@ def _make_generator(output_chunks: list[str]) -> tuple[HFBaselineGenerator, _Fak
     return gen, streamer
 
 
+def _content(chunks: list) -> str:
+    return "".join(c.text for c in chunks)
+
+
 @pytest.mark.asyncio
 async def test_yields_text_chunks_then_length_terminator() -> None:
     gen, _ = _make_generator(["hello", " world", "!"])
     chunks = [chunk async for chunk in gen.stream(prompt="hi", max_tokens=10)]
 
-    text_chunks = [c for c in chunks if c.text]
-    assert [c.text for c in text_chunks] == ["hello", " world", "!"]
+    assert _content(chunks) == "hello world!"
     assert chunks[-1].text == ""
     assert chunks[-1].finish_reason == "length"
 
@@ -91,8 +94,7 @@ async def test_stop_sequence_does_not_echo_in_output() -> None:
         chunk async for chunk in gen.stream(prompt="hi", max_tokens=10, stop=["world"])
     ]
 
-    text_chunks = [c.text for c in chunks if c.text]
-    assert text_chunks == ["hello "]
+    assert _content(chunks) == "hello "
     assert chunks[-1].finish_reason == "stop"
 
 
@@ -103,8 +105,22 @@ async def test_stop_in_middle_of_chunk_emits_pre_stop_portion_only() -> None:
         chunk async for chunk in gen.stream(prompt="hi", max_tokens=10, stop=["END"])
     ]
 
-    text_chunks = [c.text for c in chunks if c.text]
-    assert text_chunks == ["hel", "lo "]
+    assert _content(chunks) == "hello "
+    assert chunks[-1].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_stop_straddling_chunk_boundary_does_not_leak() -> None:
+    """Stop sequence ``"bc"`` is split across chunks ``"ab"`` and ``"cd"``.
+    The ``"b"`` of the stop sequence sits at the end of the first chunk,
+    so a non-buffered emitter would leak it. The hold-back must catch
+    this before any prefix of the stop reaches the client."""
+    gen, _ = _make_generator(["ab", "cd"])
+    chunks = [
+        chunk async for chunk in gen.stream(prompt="hi", max_tokens=10, stop=["bc"])
+    ]
+
+    assert _content(chunks) == "a"
     assert chunks[-1].finish_reason == "stop"
 
 
@@ -116,13 +132,12 @@ async def test_stop_picks_earliest_match_not_list_order() -> None:
             prompt="hi", max_tokens=10, stop=["GH", "CD"]
         )
     ]
-    text_chunks = [c.text for c in chunks if c.text]
-    assert text_chunks == ["AB "]
+    assert _content(chunks) == "AB "
     assert chunks[-1].finish_reason == "stop"
 
 
 @pytest.mark.asyncio
-async def test_generate_exception_does_not_hang_consumer() -> None:
+async def test_generate_exception_propagates_to_caller() -> None:
     streamer = _FakeStreamer()
 
     class _FailingModel:
@@ -137,9 +152,9 @@ async def test_generate_exception_does_not_hang_consumer() -> None:
         cancel_criteria_factory=lambda _flag: None,
     )
 
-    chunks = [chunk async for chunk in gen.stream(prompt="hi", max_tokens=10)]
-    assert all(c.text == "" for c in chunks)
-    assert chunks[-1].finish_reason == "length"
+    with pytest.raises(RuntimeError, match="simulated CUDA OOM"):
+        async for _ in gen.stream(prompt="hi", max_tokens=10):
+            pass
 
 
 @pytest.mark.asyncio
@@ -148,8 +163,7 @@ async def test_stop_with_no_match_runs_to_completion() -> None:
     chunks = [
         chunk async for chunk in gen.stream(prompt="hi", max_tokens=10, stop=["xyz"])
     ]
-    text_chunks = [c.text for c in chunks if c.text]
-    assert text_chunks == ["a ", "b ", "c"]
+    assert _content(chunks) == "a b c"
     assert chunks[-1].finish_reason == "length"
 
 

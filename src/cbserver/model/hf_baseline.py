@@ -4,7 +4,7 @@ import threading
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from cbserver.engine.protocols import FinishReason, GenerationChunk
+from cbserver.engine.protocols import FinishReason, GenerationChunk, StopAwareEmitter
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +30,6 @@ def _build_cancel_criteria(cancel_flag: threading.Event) -> Any | None:
             return cancel_flag.is_set()
 
     return StoppingCriteriaList([_FlagStoppingCriterion()])
-
-
-def _earliest_stop_index(buffer: str, stop: list[str]) -> int | None:
-    indices = [buffer.find(needle) for needle in stop]
-    hits = [idx for idx in indices if idx >= 0]
-    return min(hits) if hits else None
 
 
 def _terminate_streamer(streamer: Any) -> None:
@@ -74,6 +68,7 @@ class HFBaselineGenerator:
         inputs = self._tokenizer(prompt, return_tensors="pt").to(self._device)
         streamer = self._streamer_factory(self._tokenizer)
         cancel_flag = threading.Event()
+        thread_exception: list[BaseException | None] = [None]
 
         do_sample = temperature > 0
         generation_kwargs: dict[str, Any] = {
@@ -94,8 +89,9 @@ class HFBaselineGenerator:
         def _run_generate() -> None:
             try:
                 self._model.generate(**generation_kwargs)
-            except BaseException:
+            except BaseException as exc:
                 logger.exception("hf_baseline: model.generate raised")
+                thread_exception[0] = exc
             finally:
                 _terminate_streamer(streamer)
 
@@ -103,7 +99,7 @@ class HFBaselineGenerator:
         thread.start()
 
         loop = asyncio.get_running_loop()
-        accumulated = ""
+        emitter = StopAwareEmitter(stop)
         finish: FinishReason = "length"
 
         try:
@@ -112,19 +108,20 @@ class HFBaselineGenerator:
                 if chunk_text is None:
                     break
 
-                new_accumulated = accumulated + chunk_text
+                emit, stopped = emitter.add(chunk_text)
+                if emit:
+                    yield GenerationChunk(text=emit, finish_reason=None)
+                if stopped:
+                    finish = "stop"
+                    break
 
-                if stop:
-                    stop_idx = _earliest_stop_index(new_accumulated, stop)
-                    if stop_idx is not None:
-                        pre_stop = new_accumulated[len(accumulated) : stop_idx]
-                        if pre_stop:
-                            yield GenerationChunk(text=pre_stop, finish_reason=None)
-                        finish = "stop"
-                        break
+            if thread_exception[0] is not None:
+                raise thread_exception[0]
 
-                yield GenerationChunk(text=chunk_text, finish_reason=None)
-                accumulated = new_accumulated
+            if finish == "length":
+                remaining = emitter.flush()
+                if remaining:
+                    yield GenerationChunk(text=remaining, finish_reason=None)
 
             yield GenerationChunk(text="", finish_reason=finish)
         finally:
