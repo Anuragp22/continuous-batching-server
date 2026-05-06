@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from cbserver.engine.protocols import FinishReason
+
 
 class CompletionRequest(BaseModel):
     model: str
@@ -20,9 +22,6 @@ class CompletionRequest(BaseModel):
         if not value:
             raise ValueError("prompt must not be empty")
         return value
-
-
-FinishReason = Literal["stop", "length", "cancelled"]
 
 
 class Choice(BaseModel):
@@ -56,7 +55,7 @@ class CompletionResponse(BaseModel):
 
 class StreamChunk(BaseModel):
     id: str
-    object: Literal["text_completion.chunk"] = "text_completion.chunk"
+    object: Literal["text_completion"] = "text_completion"
     created: int
     model: str
     choices: list[Choice]

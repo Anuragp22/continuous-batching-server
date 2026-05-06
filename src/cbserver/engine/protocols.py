@@ -18,4 +18,5 @@ class TextGenerator(Protocol):
         max_tokens: int,
         temperature: float,
         top_p: float,
+        stop: list[str] | None = None,
     ) -> AsyncIterator[GenerationChunk]: ...

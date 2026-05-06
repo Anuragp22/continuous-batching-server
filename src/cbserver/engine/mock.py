@@ -14,9 +14,14 @@ class MockGenerator:
         max_tokens: int,
         temperature: float = 1.0,
         top_p: float = 1.0,
+        stop: list[str] | None = None,
     ) -> AsyncIterator[GenerationChunk]:
         for index in range(max_tokens):
             if self._delay > 0:
                 await asyncio.sleep(self._delay)
-            yield GenerationChunk(text=f"tok{index} ", finish_reason=None)
+            text = f"tok{index} "
+            if stop and any(needle in text for needle in stop):
+                yield GenerationChunk(text="", finish_reason="stop")
+                return
+            yield GenerationChunk(text=text, finish_reason=None)
         yield GenerationChunk(text="", finish_reason="length")
