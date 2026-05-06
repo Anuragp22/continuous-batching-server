@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -5,9 +7,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CBSERVER_", env_file=".env", extra="ignore")
 
+    engine_backend: Literal["mock", "hf"] = Field(default="mock")
+
     model: str = Field(default="Qwen/Qwen2.5-0.5B-Instruct")
-    dtype: str = Field(default="bfloat16")
-    device: str = Field(default="cuda")
+    dtype: str = Field(default="auto")
+    device: str = Field(default="auto")
     attn_implementation: str = Field(default="eager")
 
     max_seq_len: int = Field(default=2048, ge=64)
