@@ -85,14 +85,26 @@ async def test_yields_text_chunks_then_length_terminator() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stop_sequence_truncates_with_stop_finish_reason() -> None:
+async def test_stop_sequence_does_not_echo_in_output() -> None:
     gen, _ = _make_generator(["hello ", "world ", "and more"])
     chunks = [
         chunk async for chunk in gen.stream(prompt="hi", max_tokens=10, stop=["world"])
     ]
 
     text_chunks = [c.text for c in chunks if c.text]
-    assert text_chunks == ["hello ", "world "]
+    assert text_chunks == ["hello "]
+    assert chunks[-1].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_stop_in_middle_of_chunk_emits_pre_stop_portion_only() -> None:
+    gen, _ = _make_generator(["hel", "lo END world"])
+    chunks = [
+        chunk async for chunk in gen.stream(prompt="hi", max_tokens=10, stop=["END"])
+    ]
+
+    text_chunks = [c.text for c in chunks if c.text]
+    assert text_chunks == ["hel", "lo "]
     assert chunks[-1].finish_reason == "stop"
 
 
@@ -115,6 +127,63 @@ async def test_aclose_terminates_generator_cleanly() -> None:
     first = await iterator.__anext__()
     assert first.text == "a"
     await iterator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_aclose_signals_cancel_flag_to_stopping_criteria() -> None:
+    streamer = _FakeStreamer()
+    cancel_observed = threading.Event()
+
+    def _capture_factory(cancel_flag: threading.Event) -> list[Any]:
+        def _check(*_args: Any, **_kwargs: Any) -> bool:
+            if cancel_flag.is_set():
+                cancel_observed.set()
+                return True
+            return False
+
+        return [_check]
+
+    class _LongRunningModel:
+        def generate(
+            self,
+            *,
+            streamer: _FakeStreamer,
+            stopping_criteria: list[Any] | None = None,
+            **_kwargs: Any,
+        ) -> None:
+            import time
+
+            i = 0
+            while True:
+                if stopping_criteria is not None:
+                    for criterion in stopping_criteria:
+                        if criterion(None, None):
+                            streamer.put_stop()
+                            return
+                streamer.put(f"tok{i} ")
+                i += 1
+                time.sleep(0.005)
+                if i > 200:
+                    streamer.put_stop()
+                    return
+
+    gen = HFBaselineGenerator(
+        model=_LongRunningModel(),
+        tokenizer=_FakeTokenizer(),
+        device="cpu",
+        streamer_factory=lambda _tok: streamer,
+        cancel_criteria_factory=_capture_factory,
+    )
+
+    iterator = gen.stream(prompt="hi", max_tokens=10_000)
+    first = await iterator.__anext__()
+    assert first.text == "tok0 "
+    await iterator.aclose()
+
+    assert cancel_observed.wait(timeout=1.0), (
+        "cancel_flag was not propagated to stopping_criteria; "
+        "thread would have run to max_tokens and held resources"
+    )
 
 
 def test_generation_runs_in_separate_thread() -> None:

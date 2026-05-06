@@ -16,6 +16,19 @@ def _default_streamer_factory(tokenizer: Any) -> Any:
     )
 
 
+def _build_cancel_criteria(cancel_flag: threading.Event) -> Any | None:
+    try:
+        from transformers import StoppingCriteria, StoppingCriteriaList
+    except ImportError:
+        return None
+
+    class _FlagStoppingCriterion(StoppingCriteria):  # type: ignore[misc]
+        def __call__(self, input_ids: Any, scores: Any, **_kwargs: Any) -> bool:
+            return cancel_flag.is_set()
+
+    return StoppingCriteriaList([_FlagStoppingCriterion()])
+
+
 class HFBaselineGenerator:
     def __init__(
         self,
@@ -23,11 +36,13 @@ class HFBaselineGenerator:
         tokenizer: Any,
         device: str,
         streamer_factory: Callable[[Any], Any] | None = None,
+        cancel_criteria_factory: Callable[[threading.Event], Any] | None = None,
     ) -> None:
         self._model = model
         self._tokenizer = tokenizer
         self._device = device
         self._streamer_factory = streamer_factory or _default_streamer_factory
+        self._cancel_criteria_factory = cancel_criteria_factory or _build_cancel_criteria
 
     async def stream(
         self,
@@ -39,6 +54,7 @@ class HFBaselineGenerator:
     ) -> AsyncIterator[GenerationChunk]:
         inputs = self._tokenizer(prompt, return_tensors="pt").to(self._device)
         streamer = self._streamer_factory(self._tokenizer)
+        cancel_flag = threading.Event()
 
         do_sample = temperature > 0
         generation_kwargs: dict[str, Any] = {
@@ -51,6 +67,10 @@ class HFBaselineGenerator:
         }
         if do_sample:
             generation_kwargs["temperature"] = temperature
+
+        criteria = self._cancel_criteria_factory(cancel_flag)
+        if criteria is not None:
+            generation_kwargs["stopping_criteria"] = criteria
 
         thread = threading.Thread(
             target=self._model.generate, kwargs=generation_kwargs, daemon=True
@@ -67,18 +87,26 @@ class HFBaselineGenerator:
                 if chunk_text is None:
                     break
 
-                accumulated += chunk_text
+                new_accumulated = accumulated + chunk_text
 
-                if stop and any(needle in accumulated for needle in stop):
-                    finish = "stop"
-                    yield GenerationChunk(text=chunk_text, finish_reason=None)
-                    break
+                if stop:
+                    matched = next(
+                        (needle for needle in stop if needle in new_accumulated), None
+                    )
+                    if matched:
+                        stop_idx = new_accumulated.index(matched)
+                        pre_stop = new_accumulated[len(accumulated) : stop_idx]
+                        if pre_stop:
+                            yield GenerationChunk(text=pre_stop, finish_reason=None)
+                        finish = "stop"
+                        break
 
                 yield GenerationChunk(text=chunk_text, finish_reason=None)
+                accumulated = new_accumulated
 
             yield GenerationChunk(text="", finish_reason=finish)
         finally:
-            await loop.run_in_executor(None, thread.join)
+            cancel_flag.set()
 
 
 def _next_or_none(iterator: Any) -> str | None:

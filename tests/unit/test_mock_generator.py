@@ -59,3 +59,12 @@ async def test_mock_with_none_stop_behaves_like_no_stop() -> None:
     chunks = [chunk async for chunk in gen.stream("hi", max_tokens=3, stop=None)]
     assert len(chunks) == 4
     assert chunks[-1].finish_reason == "length"
+
+
+@pytest.mark.asyncio
+async def test_mock_emits_pre_stop_portion_when_stop_matches_inside_chunk() -> None:
+    gen = MockGenerator(delay_per_token=0.0)
+    chunks = [chunk async for chunk in gen.stream("hi", max_tokens=10, stop=["k1"])]
+    texts = [c.text for c in chunks if c.text]
+    assert texts == ["tok0 ", "to"]
+    assert chunks[-1].finish_reason == "stop"
