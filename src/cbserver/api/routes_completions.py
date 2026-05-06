@@ -67,6 +67,7 @@ async def _stream_events(
                 max_tokens=body.max_tokens,
                 temperature=body.temperature,
                 top_p=body.top_p,
+                stop=body.stop,
             ):
                 if await request.is_disconnected():
                     cancelled = True
@@ -114,6 +115,7 @@ async def _collect_response(
                 max_tokens=body.max_tokens,
                 temperature=body.temperature,
                 top_p=body.top_p,
+                stop=body.stop,
             ):
                 if chunk.text:
                     pieces.append(chunk.text)
