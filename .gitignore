@@ -43,3 +43,6 @@ hf_cache/
 models/
 bench/results/*.csv
 !bench/results/.gitkeep
+
+# Tooling (per-machine, not portable)
+.claude/

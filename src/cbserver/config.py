@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     block_size: int = Field(default=16, ge=1)
     num_blocks: int = Field(default=1024, ge=16)
 
+    max_concurrent_requests: int = Field(default=64, ge=1)
+    mock_token_delay: float = Field(default=0.0, ge=0.0)
+
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8000, ge=1, le=65535)
     log_level: str = Field(default="INFO")
