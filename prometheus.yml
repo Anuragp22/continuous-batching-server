@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+  external_labels:
+    project: cbis
+    backend: mock
+
+scrape_configs:
+  - job_name: cbserver
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - cbserver:8000
+        labels:
+          service: cbserver

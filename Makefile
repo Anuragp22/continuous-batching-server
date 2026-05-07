@@ -1,4 +1,4 @@
-.PHONY: install dev test test-fast lint format typecheck bench-naive bench-batched bench clean docker-up docker-down
+.PHONY: install dev test test-fast lint format typecheck bench-naive bench-batched bench clean docker-up docker-down docker-logs docker-build docker-config
 
 PY ?= python
 UV ?= uv
@@ -52,6 +52,15 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+docker-logs:
+	docker compose logs -f cbserver
+
+docker-build:
+	docker compose build cbserver
+
+docker-config:
+	docker compose config
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache build dist *.egg-info
