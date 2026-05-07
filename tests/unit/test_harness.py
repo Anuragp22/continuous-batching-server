@@ -31,7 +31,12 @@ def test_percentile_monotonic_in_p() -> None:
 
 
 def _result(
-    *, success: bool = True, ttft_ms: float = 50.0, total_ms: float = 200.0, chunks: int = 32
+    *,
+    success: bool = True,
+    ttft_ms: float = 50.0,
+    total_ms: float = 200.0,
+    chunks: int = 32,
+    chars: int = 128,
 ) -> RequestResult:
     return RequestResult(
         prompt_length_words=10,
@@ -39,6 +44,7 @@ def _result(
         ttft_ms=ttft_ms,
         total_ms=total_ms,
         completion_chunks=chunks,
+        completion_chars=chars,
         success=success,
         error=None if success else "boom",
     )
@@ -62,9 +68,9 @@ def test_summary_counts_success_and_failure() -> None:
 
 def test_summary_throughput_excludes_failed_requests() -> None:
     results = [
-        _result(chunks=64),
-        _result(chunks=64),
-        _result(success=False, chunks=0),
+        _result(chunks=64, chars=256),
+        _result(chunks=64, chars=256),
+        _result(success=False, chunks=0, chars=0),
     ]
     summary = summarize(
         results,
@@ -76,6 +82,28 @@ def test_summary_throughput_excludes_failed_requests() -> None:
         seed=0,
     )
     assert summary["throughput_chunks_per_s"] == pytest.approx(64.0)
+    assert summary["throughput_chars_per_s"] == pytest.approx(256.0)
+
+
+def test_summary_reports_chars_throughput_alongside_chunks() -> None:
+    """chars/s is the cross-backend comparison metric since SSE chunk count
+    varies with TextIteratorStreamer's batching while characters do not."""
+    results = [
+        _result(chunks=10, chars=50),
+        _result(chunks=10, chars=50),
+    ]
+    summary = summarize(
+        results,
+        wall_time_s=1.0,
+        mode="naive",
+        model="qwen",
+        concurrency=2,
+        max_tokens=128,
+        seed=0,
+    )
+    assert summary["throughput_chunks_per_s"] == pytest.approx(20.0)
+    assert summary["throughput_chars_per_s"] == pytest.approx(100.0)
+    assert "metric_notes" in summary
 
 
 def test_summary_records_metadata() -> None:
@@ -155,6 +183,7 @@ def test_run_workload_preserves_input_order_under_jitter(monkeypatch) -> None:
             ttft_ms=1.0,
             total_ms=1.0,
             completion_chunks=1,
+            completion_chars=len(prompt),
             success=True,
             error=prompt,
         )

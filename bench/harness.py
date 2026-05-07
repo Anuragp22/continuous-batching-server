@@ -22,6 +22,7 @@ class RequestResult:
     ttft_ms: float
     total_ms: float
     completion_chunks: int
+    completion_chars: int
     success: bool
     error: str | None = None
 
@@ -42,6 +43,7 @@ async def _stream_one_request(
     request_start = time.monotonic()
     ttft_ms: float | None = None
     chunks = 0
+    chars = 0
 
     try:
         async with client.stream(
@@ -58,6 +60,13 @@ async def _stream_one_request(
                 if ttft_ms is None:
                     ttft_ms = (time.monotonic() - stream_start) * 1000.0
                 chunks += 1
+                try:
+                    chunk_obj = json.loads(payload_text)
+                    chars += sum(
+                        len(c.get("text", "")) for c in chunk_obj.get("choices", [])
+                    )
+                except (json.JSONDecodeError, AttributeError, TypeError):
+                    pass
 
         total_ms = (time.monotonic() - request_start) * 1000.0
         return RequestResult(
@@ -66,6 +75,7 @@ async def _stream_one_request(
             ttft_ms=ttft_ms or 0.0,
             total_ms=total_ms,
             completion_chunks=max(0, chunks - 1),
+            completion_chars=chars,
             success=True,
         )
     except (httpx.HTTPError, httpx.StreamError, OSError) as exc:
@@ -75,6 +85,7 @@ async def _stream_one_request(
             ttft_ms=0.0,
             total_ms=(time.monotonic() - request_start) * 1000.0,
             completion_chunks=0,
+            completion_chars=0,
             success=False,
             error=f"{type(exc).__name__}: {exc}",
         )
@@ -177,6 +188,11 @@ def summarize(
     ttfts = [r.ttft_ms for r in successful if r.ttft_ms > 0]
     totals = [r.total_ms for r in successful]
     chunks_total = sum(r.completion_chunks for r in successful)
+    chars_total = sum(r.completion_chars for r in successful)
+
+    safe_div = (lambda numer: round(numer / wall_time_s, 2)) if wall_time_s > 0 else (
+        lambda _numer: 0.0
+    )
 
     return {
         "mode": mode,
@@ -188,15 +204,21 @@ def summarize(
         "n_successful": len(successful),
         "n_failed": len(results) - len(successful),
         "wall_time_s": round(wall_time_s, 3),
-        "throughput_chunks_per_s": round(chunks_total / wall_time_s, 2)
-        if wall_time_s > 0
-        else 0.0,
+        "throughput_chunks_per_s": safe_div(chunks_total),
+        "throughput_chars_per_s": safe_div(chars_total),
         "ttft_ms_p50": round(percentile(ttfts, 50), 2),
         "ttft_ms_p95": round(percentile(ttfts, 95), 2),
         "ttft_ms_p99": round(percentile(ttfts, 99), 2),
         "total_ms_p50": round(percentile(totals, 50), 2),
         "total_ms_p95": round(percentile(totals, 95), 2),
         "total_ms_p99": round(percentile(totals, 99), 2),
+        "metric_notes": (
+            "throughput_chunks_per_s counts SSE data frames; on the HF path "
+            "TextIteratorStreamer batches multiple tokens into one frame so "
+            "chunk count is not equivalent to decoded tokens. "
+            "throughput_chars_per_s counts emitted text characters and is "
+            "stable across backends. Use chars/s for cross-backend comparison."
+        ),
         "commit_sha": _git_sha(),
         "timestamp": int(time.time()),
         "hardware": _hardware_stamp(),
@@ -265,7 +287,8 @@ def main(
     output_path.write_text(json.dumps(summary, indent=2))
 
     click.echo(
-        f"Throughput: {summary['throughput_chunks_per_s']:.1f} chunks/s | "
+        f"Throughput: {summary['throughput_chunks_per_s']:.1f} chunks/s "
+        f"({summary['throughput_chars_per_s']:.1f} chars/s) | "
         f"TTFT p50/p95/p99: "
         f"{summary['ttft_ms_p50']:.1f} / "
         f"{summary['ttft_ms_p95']:.1f} / "
