@@ -1,6 +1,10 @@
-import pytest
+import asyncio
 
-from bench.harness import RequestResult, percentile, summarize
+import pytest
+from click.testing import CliRunner
+
+import bench.harness as harness_module
+from bench.harness import RequestResult, main, percentile, run_workload, summarize
 
 
 def test_percentile_picks_floor_index_for_small_samples() -> None:
@@ -135,3 +139,88 @@ def test_percentile_single_element_returns_that_element() -> None:
     assert percentile([42.0], 0) == 42.0
     assert percentile([42.0], 50) == 42.0
     assert percentile([42.0], 100) == 42.0
+
+
+def test_run_workload_preserves_input_order_under_jitter(monkeypatch) -> None:
+    """Result list is indexed by input prompt position even when individual
+    requests complete out-of-order (Zipfian workloads always do this).
+    The sleep duration is encoded in the prompt so the fake completes in
+    a non-trivially different order than input ordering."""
+
+    async def _fake_stream(_client, _base_url, prompt, _max_tokens, _model):
+        await asyncio.sleep(int(prompt.split()[0]) / 1000.0)
+        return RequestResult(
+            prompt_length_words=len(prompt.split()),
+            max_tokens=128,
+            ttft_ms=1.0,
+            total_ms=1.0,
+            completion_chunks=1,
+            success=True,
+            error=prompt,
+        )
+
+    monkeypatch.setattr(harness_module, "_stream_one_request", _fake_stream)
+
+    prompts = [f"{ms} marker" for ms in (50, 5, 30, 1, 20, 10)]
+    results = asyncio.run(
+        run_workload("http://x", prompts, max_tokens=128, concurrency=6, model="m")
+    )
+    assert [r.error for r in results] == prompts
+
+
+def test_run_workload_rejects_zero_concurrency() -> None:
+    with pytest.raises(ValueError):
+        asyncio.run(
+            run_workload("http://x", ["p"], max_tokens=8, concurrency=0, model="m")
+        )
+
+
+def test_run_workload_handles_empty_prompts() -> None:
+    results = asyncio.run(
+        run_workload("http://x", [], max_tokens=8, concurrency=4, model="m")
+    )
+    assert results == []
+
+
+def test_cli_rejects_zero_concurrency(tmp_path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "--mode", "naive",
+            "--model", "qwen",
+            "--concurrency", "0",
+            "--n-requests", "1",
+            "--output", str(tmp_path / "out.json"),
+        ],
+    )
+    assert result.exit_code != 0
+
+
+def test_cli_rejects_zero_n_requests(tmp_path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "--mode", "naive",
+            "--model", "qwen",
+            "--n-requests", "0",
+            "--output", str(tmp_path / "out.json"),
+        ],
+    )
+    assert result.exit_code != 0
+
+
+def test_cli_rejects_zero_max_tokens(tmp_path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "--mode", "naive",
+            "--model", "qwen",
+            "--max-tokens", "0",
+            "--n-requests", "1",
+            "--output", str(tmp_path / "out.json"),
+        ],
+    )
+    assert result.exit_code != 0

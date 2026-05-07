@@ -88,20 +88,28 @@ async def run_workload(
     model: str,
     timeout_s: float = 600.0,
 ) -> list[RequestResult]:
+    if concurrency < 1:
+        raise ValueError(f"concurrency must be >= 1, got {concurrency}")
+    if not prompts:
+        return []
+
     semaphore = asyncio.Semaphore(concurrency)
-    results: list[RequestResult] = []
+    results: list[RequestResult | None] = [None] * len(prompts)
 
     async with httpx.AsyncClient(timeout=timeout_s) as client:
 
-        async def _bounded(prompt: str) -> None:
+        async def _bounded(idx: int, prompt: str) -> None:
             async with semaphore:
-                results.append(
-                    await _stream_one_request(client, base_url, prompt, max_tokens, model)
+                results[idx] = await _stream_one_request(
+                    client, base_url, prompt, max_tokens, model
                 )
 
-        await asyncio.gather(*(_bounded(p) for p in prompts))
+        await asyncio.gather(
+            *(_bounded(idx, prompt) for idx, prompt in enumerate(prompts))
+        )
 
-    return results
+    assert all(r is not None for r in results)
+    return [r for r in results if r is not None]
 
 
 def percentile(values: Iterable[float], p: float) -> float:
@@ -199,12 +207,20 @@ def summarize(
 @click.option("--mode", required=True, type=click.Choice(["naive", "batched", "sweep"]))
 @click.option("--model", required=True, help="Model identifier (echoed into result JSON).")
 @click.option("--base-url", default="http://localhost:8000", show_default=True)
-@click.option("--concurrency", default=8, type=int, show_default=True)
-@click.option("--n-requests", default=64, type=int, show_default=True)
-@click.option("--max-tokens", default=128, type=int, show_default=True)
+@click.option(
+    "--concurrency", default=8, type=click.IntRange(min=1), show_default=True
+)
+@click.option(
+    "--n-requests", default=64, type=click.IntRange(min=1), show_default=True
+)
+@click.option(
+    "--max-tokens", default=128, type=click.IntRange(min=1), show_default=True
+)
 @click.option("--seed", default=42, type=int, show_default=True)
 @click.option("--alpha", default=1.2, type=float, show_default=True)
-@click.option("--max-prompt-len", default=512, type=int, show_default=True)
+@click.option(
+    "--max-prompt-len", default=512, type=click.IntRange(min=1), show_default=True
+)
 @click.option("--output", required=True, type=click.Path(dir_okay=False))
 def main(
     mode: str,
