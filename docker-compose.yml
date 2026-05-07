@@ -1,0 +1,58 @@
+services:
+  cbserver:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cpu
+    image: cbserver:dev
+    container_name: cbserver
+    ports:
+      - "8000:8000"
+    environment:
+      CBSERVER_ENGINE_BACKEND: mock
+      CBSERVER_LOG_FORMAT: json
+      CBSERVER_LOG_LEVEL: INFO
+      CBSERVER_MOCK_TOKEN_DELAY: "0.02"
+    networks:
+      - cbis
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: cbis-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=24h"
+      - "--web.enable-lifecycle"
+    networks:
+      - cbis
+    depends_on:
+      - cbserver
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: cbis-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - cbis
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+networks:
+  cbis:
+    driver: bridge
